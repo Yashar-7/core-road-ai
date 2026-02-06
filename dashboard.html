@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CORE Control Center - Smart Tech</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    
+    <style>
+        :root { --neon-green: #00ff41; --dark-bg: #050505; --alert-red: #ff0000; }
+        body {
+            margin: 0; background: var(--dark-bg); color: var(--neon-green);
+            font-family: 'Courier New', monospace; display: flex; flex-direction: column; height: 100vh;
+        }
+        header {
+            padding: 15px; border-bottom: 2px solid var(--neon-green);
+            display: flex; justify-content: space-between; align-items: center;
+            background: rgba(0, 20, 0, 0.9); z-index: 1001;
+        }
+        #map { flex: 1; width: 100%; filter: invert(100%) hue-rotate(180deg) brightness(0.6) contrast(1.2); }
+        
+        .stats-hub { display: flex; gap: 20px; font-size: 0.8rem; }
+        .stat-box { border: 1px solid var(--neon-green); padding: 5px 10px; background: rgba(0,255,65,0.05); }
+        .stat-num { color: white; font-weight: bold; }
+
+        /* Marcador de alerta animado */
+        .radar-icon {
+            background: rgba(255, 0, 0, 0.4); border: 2px solid var(--alert-red);
+            border-radius: 50%; box-shadow: 0 0 15px var(--alert-red);
+            animation: pulse-red 1.5s infinite;
+        }
+        @keyframes pulse-red { 0% { transform: scale(0.7); opacity: 1; } 100% { transform: scale(1.6); opacity: 0; } }
+
+        /* Estilo para los nombres de las unidades en el mapa */
+        .unit-label {
+            background: rgba(0, 255, 65, 0.2);
+            border: 1px solid var(--neon-green);
+            color: white;
+            padding: 2px 5px;
+            font-size: 10px;
+            border-radius: 4px;
+            text-transform: uppercase;
+        }
+
+        #evidencia-flotante {
+            position: fixed; top: 100px; right: 20px; width: 280px;
+            border: 2px solid var(--neon-green); background: rgba(0,0,0,0.9);
+            z-index: 2000; display: none; padding: 10px;
+            box-shadow: 0 0 30px rgba(0,255,65,0.3); border-radius: 8px;
+            animation: slideIn 0.5s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+        }
+        @keyframes slideIn { from { transform: translateX(120%); } to { transform: translateX(0); } }
+
+        .panel-alertas { height: 200px; background: #000; overflow-y: auto; border-top: 2px solid var(--neon-green); padding: 10px; }
+        .alert-card { border-left: 4px solid var(--alert-red); background: #111; margin-bottom: 10px; padding: 10px; font-size: 0.8rem; display: flex; justify-content: space-between; }
+        .alert-card img { width: 80px; height: 50px; object-fit: cover; border: 1px solid #333; }
+        .pulse { animation: blinker 1s linear infinite; color: var(--alert-red); font-weight: bold; }
+        @keyframes blinker { 50% { opacity: 0; } }
+    </style>
+</head>
+<body>
+
+<header>
+    <div>
+        <h2 style="margin:0;">CORE CONTROL CENTER</h2>
+        <small>TRACKING MULTI-UNIDAD - MAR DEL PLATA</small>
+    </div>
+    
+    <div class="stats-hub">
+        <div class="stat-box">ALERTAS: <span id="count-alertas" class="stat-num">0</span></div>
+        <div class="stat-box">PUNTOS RUTA: <span id="count-ruta" class="stat-num">0</span></div>
+    </div>
+
+    <div id="status-global" class="pulse">SATÉLITE ACTIVO</div>
+</header>
+
+<div id="evidencia-flotante">
+    <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+        <small style="color:var(--alert-red); font-weight:bold;">🚨 ALERTA DETECTADA</small>
+        <small id="id-unidad" style="color:#888"></small>
+    </div>
+    <img id="img-evidencia" src="" style="width:100%; border:1px solid var(--neon-green); margin-bottom:5px;">
+    <div id="info-evidencia" style="font-size:0.7rem; line-height:1.2;"></div>
+</div>
+
+<div id="map"></div>
+
+<div class="panel-alertas" id="log-alertas">
+    <div style="text-align: center; color: #444;">ESPERANDO TELEMETRÍA DE UNIDADES...</div>
+</div>
+
+<script>
+    const SUPABASE_URL = 'https://svpurpvbiujhcbiugrkh.supabase.co';
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2cHVycHZiaXVqaGNiaXVncmtoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc3NDgzMTUsImV4cCI6MjA4MzMyNDMxNX0.AivKJ0_N0z_4T4vLNfUcE2hepJ1XXOO8-4fSA3PJXdc';
+    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    const map = L.map('map').setView([-37.994, -57.553], 14); 
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+    // --- NUEVA LÓGICA MULTI-UNIDAD ---
+    const unidadesActivas = {}; // Objeto para almacenar marcadores y rutas por nombre de unidad
+    let totalAlertas = 0;
+    let totalPuntosRuta = 0;
+
+    const coloresUnidades = ['#00f2ff', '#00ff41', '#ffff00', '#ff00ff', '#ff8000'];
+    let colorIndex = 0;
+
+    async function cargarHistorico() {
+        const { data } = await supabaseClient
+            .from('road_alerts')
+            .select('*')
+            .order('created_at', { ascending: true });
+
+        if (data) {
+            data.forEach(item => {
+                if (item.alert_type === 'RUTA') {
+                    procesarPuntoRuta(item);
+                } else {
+                    addAlertToMap(item, false);
+                }
+            });
+        }
+    }
+
+    function iniciarRealtime() {
+        supabaseClient
+            .channel('cambios_core')
+            .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'road_alerts' }, payload => {
+                const nuevaData = payload.new;
+                if (nuevaData.alert_type === 'RUTA') {
+                    procesarPuntoRuta(nuevaData, true);
+                } else {
+                    addAlertToMap(nuevaData, true);
+                    playAlertSound();
+                }
+            })
+            .subscribe();
+    }
+
+    function procesarPuntoRuta(data, autoFly = false) {
+        const id = data.dispositivo || 'Unidad Desconocida';
+        const pos = [data.latitude, data.longitude];
+
+        // Si la unidad no existe, inicializarla
+        if (!unidadesActivas[id]) {
+            const color = coloresUnidades[colorIndex % coloresUnidades.length];
+            colorIndex++;
+
+            unidadesActivas[id] = {
+                ruta: [],
+                polyline: L.polyline([], {color: color, weight: 4, opacity: 0.6, dashArray: '5, 10'}).addTo(map),
+                marker: L.marker(pos, {
+                    icon: L.divIcon({ 
+                        className: 'unit-label', 
+                        html: `<span>${id}</span>`,
+                        iconSize: [80, 20],
+                        iconAnchor: [40, 25]
+                    })
+                }).addTo(map)
+            };
+        }
+
+        // Actualizar datos de la unidad
+        unidadesActivas[id].ruta.push(pos);
+        unidadesActivas[id].polyline.setLatLngs(unidadesActivas[id].ruta);
+        unidadesActivas[id].marker.setLatLng(pos);
+
+        totalPuntosRuta++;
+        document.getElementById('count-ruta').innerText = totalPuntosRuta;
+
+        if (autoFly) {
+            map.panTo(pos);
+        }
+    }
+
+    function addAlertToMap(alerta, isNew = false) {
+        if (!alerta.latitude || !alerta.longitude) return;
+
+        totalAlertas++;
+        document.getElementById('count-alertas').innerText = totalAlertas;
+
+        const radarIcon = L.divIcon({ className: 'radar-icon', iconSize: [20, 20] });
+        const marker = L.marker([alerta.latitude, alerta.longitude], { icon: radarIcon }).addTo(map);
+        
+        marker.bindPopup(`<div style="color:black"><b>${alerta.dispositivo}</b><br>TIPO: ${alerta.alert_type}<br>VEL: ${alerta.speed_kmh} KM/H</div>`);
+
+        if (isNew) {
+            map.flyTo([alerta.latitude, alerta.longitude], 16);
+            mostrarPanelEvidencia(alerta);
+            marker.openPopup();
+        }
+
+        actualizarLog(alerta);
+    }
+
+    function mostrarPanelEvidencia(alerta) {
+        const panel = document.getElementById('evidencia-flotante');
+        document.getElementById('img-evidencia').src = alerta.video_url || 'https://via.placeholder.com/280x150?text=SIN+IMAGEN';
+        document.getElementById('id-unidad').innerText = alerta.dispositivo;
+        document.getElementById('info-evidencia').innerHTML = `
+            ${alerta.alert_type}<br>
+            COORD: ${alerta.latitude.toFixed(4)}, ${alerta.longitude.toFixed(4)}<br>
+            VELOCIDAD: ${alerta.speed_kmh} KM/H
+        `;
+        panel.style.display = 'block';
+        setTimeout(() => { panel.style.display = 'none'; }, 8000);
+    }
+
+    function actualizarLog(alerta) {
+        const log = document.getElementById('log-alertas');
+        if (log.innerHTML.includes("ESPERANDO")) log.innerHTML = "";
+        
+        const card = document.createElement('div');
+        card.className = 'alert-card';
+        card.innerHTML = `
+            <div>
+                <b style="color:red">⚠️ ${alerta.dispositivo}</b><br>
+                ${alerta.alert_type} | ${alerta.speed_kmh} KM/H
+            </div>
+            <img src="${alerta.video_url || ''}">
+        `;
+        log.prepend(card);
+    }
+
+    function playAlertSound() {
+        const audio = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = audio.createOscillator();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(880, audio.currentTime);
+        osc.connect(audio.destination);
+        osc.start(); osc.stop(audio.currentTime + 0.2);
+    }
+
+    cargarHistorico();
+    iniciarRealtime();
+</script>
+</body>
+</html>

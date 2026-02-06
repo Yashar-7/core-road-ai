@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Tech - CORE Road AI</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    
+    <style>
+        :root { --neon-green: #00ff41; --danger-red: #ff0000; }
+        body {
+            margin: 0; background-color: #050505; color: var(--neon-green); 
+            font-family: 'Courier New', monospace; display: flex;
+            flex-direction: column; align-items: center; justify-content: center;
+            min-height: 100vh; overflow: hidden;
+        }
+        .dashboard {
+            position: relative; width: 95%; max-width: 500px;
+            border: 2px solid var(--neon-green); padding: 20px;
+            border-radius: 15px; background: rgba(0, 20, 0, 0.9);
+            box-shadow: 0 0 30px rgba(0, 255, 65, 0.15); z-index: 5;
+        }
+        #radar-container {
+            position: relative; width: 100%; border: 1px solid #1a1a1a;
+            border-radius: 12px; overflow: hidden; margin-bottom: 20px;
+            aspect-ratio: 4/3; background: black;
+        }
+        video { 
+            width: 100%; height: 100%; object-fit: cover; opacity: 0.7; 
+            filter: brightness(1.3) contrast(1.2) saturate(0.5) sepia(20%); 
+        }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+        
+        .radar-line {
+            position: absolute; top: 50%; left: 50%; width: 200%; height: 2px;
+            background: linear-gradient(90deg, transparent, var(--neon-green));
+            transform-origin: left; animation: scan 4s linear infinite; z-index: 10; pointer-events: none;
+        }
+        @keyframes scan { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+        .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .stat-card { border: 1px solid var(--neon-green); padding: 8px; font-size: 0.75rem; text-transform: uppercase; background: rgba(0, 40, 0, 0.3); }
+        .stat-val { color: white; font-weight: bold; display: block; margin-top: 4px; }
+        
+        .emergency-btn {
+            background: transparent; color: var(--neon-green); border: 2px solid var(--neon-green);
+            padding: 15px; width: 100%; margin-top: 20px; cursor: pointer; font-weight: bold;
+            text-transform: uppercase; transition: 0.3s; border-radius: 8px;
+        }
+        .emergency-btn:hover { background: var(--neon-green); color: black; }
+        
+        #ia-status-text { font-size: 0.7rem; color: #888; margin-top: 10px; text-align: center; }
+
+        /* NUEVO: Estilo para el selector de unidad */
+        .unit-selector {
+            margin-bottom: 15px;
+            border: 1px dashed var(--neon-green);
+            padding: 5px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        #nombre-unidad {
+            background: black;
+            color: white;
+            border: 1px solid var(--neon-green);
+            font-family: 'Courier New', monospace;
+            padding: 5px;
+            flex-grow: 1;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="dashboard">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <div style="font-size: 1.2rem; font-weight: bold;">CORE ROAD AI</div>
+            <div id="gps-display" style="font-size: 0.65rem;">🛰️ GPS: BUSCANDO...</div>
+        </div>
+
+        <div class="unit-selector">
+            <small>ID UNIDAD:</small>
+            <input type="text" id="nombre-unidad" value="Unidad CORE 01">
+        </div>
+
+        <div id="radar-container">
+            <div class="radar-line"></div>
+            <video id="webcam" autoplay playsinline muted></video>
+            <canvas id="canvas-ia"></canvas>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">OBJETO<span id="obj-type" class="stat-val">NINGUNO</span></div>
+            <div class="stat-card">CARGA IA<span id="ia-load-perc" class="stat-val">0%</span></div>
+            <div class="stat-card">VELOCIDAD<span id="car-speed" class="stat-val">0 KM/H</span></div>
+            <div class="stat-card">SISTEMA<span id="sys-status" class="stat-val">OFFLINE</span></div>
+        </div>
+
+        <button id="btn-panic" class="emergency-btn">SIMULAR PELIGRO MANUAL</button>
+        <div id="ia-status-text">ESPERANDO INICIO...</div>
+    </div>
+
+    <script>
+        const SUPABASE_URL = 'https://svpurpvbiujhcbiugrkh.supabase.co';
+        const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2cHVycHZiaXVqaGNiaXVncmtoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc3NDgzMTUsImV4cCI6MjA4MzMyNDMxNX0.AivKJ0_N0z_4T4vLNfUcE2hepJ1XXOO8-4fSA3PJXdc';
+        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas-ia');
+        const ctx = canvas.getContext('2d');
+        let model, lastBBoxWidth = 0, lastCapture = null, audioCtx = null;
+        
+        let currentLat = null, currentLon = null, currentSpeed = 0;
+
+        function playSiren() {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(440, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.5);
+            osc.loop = true;
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.start();
+            return { osc };
+        }
+
+        async function startSystem() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+                video.srcObject = stream;
+                
+                document.getElementById('ia-status-text').innerText = "OPTIMIZANDO CEREBRO...";
+                document.getElementById('ia-load-perc').innerText = "50%";
+
+                model = await cocoSsd.load({ base: 'mobilenet_v2' }); 
+                
+                document.getElementById('sys-status').innerText = "VIGILANDO";
+                document.getElementById('ia-load-perc').innerText = "100%";
+                document.getElementById('ia-status-text').innerText = "MODO NOCTURNO ACTIVO";
+                
+                detectFrame();
+                trackGPS();
+                iniciarRastroTrayectoria(); 
+            } catch (err) {
+                console.error("Error inicial:", err);
+            }
+        }
+
+        function iniciarRastroTrayectoria() {
+            setInterval(async () => {
+                if (currentLat && currentLon) {
+                    // MODIFICADO: Ahora toma el ID del input
+                    const idUnidad = document.getElementById('nombre-unidad').value;
+                    await supabaseClient.from('road_alerts').insert([{ 
+                        alert_type: 'RUTA', 
+                        status: 'tracking',
+                        dispositivo: idUnidad,
+                        latitude: currentLat,
+                        longitude: currentLon,
+                        speed_kmh: currentSpeed,
+                        metadata: { type: 'breadcrumb' }
+                    }]);
+                }
+            }, 5000);
+        }
+
+        async function detectFrame() {
+            const predictions = await model.detect(video);
+            renderRadar(predictions);
+            analyzeMovement(predictions);
+            requestAnimationFrame(detectFrame);
+        }
+
+        function analyzeMovement(predictions) {
+            predictions.forEach(obj => {
+                if (['car', 'motorcycle', 'truck', 'person'].includes(obj.class)) {
+                    document.getElementById('obj-type').innerText = obj.class.toUpperCase();
+                    const currentWidth = obj.bbox[2];
+                    const growthRate = currentWidth - lastBBoxWidth;
+                    
+                    if (growthRate > 45 || currentWidth > (video.videoWidth * 0.75)) {
+                        showEmergencyUI();
+                    }
+                    lastBBoxWidth = currentWidth;
+                }
+            });
+        }
+
+        function renderRadar(predictions) {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            predictions.forEach(obj => {
+                if (['car', 'motorcycle', 'truck', 'person'].includes(obj.class)) {
+                    ctx.strokeStyle = "#00ff41";
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([5, 5]);
+                    ctx.strokeRect(...obj.bbox);
+                    ctx.fillStyle = "rgba(0, 255, 65, 0.1)";
+                    ctx.fillRect(...obj.bbox);
+                }
+            });
+        }
+
+        function trackGPS() {
+            navigator.geolocation.watchPosition(pos => {
+                currentLat = pos.coords.latitude;
+                currentLon = pos.coords.longitude;
+                currentSpeed = parseFloat((pos.coords.speed * 3.6 || 0).toFixed(1));
+                
+                document.getElementById('gps-display').innerText = `🛰️ GPS: ${currentLat.toFixed(4)}, ${currentLon.toFixed(4)}`;
+                document.getElementById('car-speed').innerText = currentSpeed + " KM/H";
+            }, err => {
+                console.warn("Error GPS:", err);
+                document.getElementById('gps-display').innerText = "🛰️ ERROR GPS";
+            }, { 
+                enableHighAccuracy: true, 
+                timeout: 5000, 
+                maximumAge: 0 
+            });
+        }
+
+        function captureEvidence() {
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = video.videoWidth;
+            tempCanvas.height = video.videoHeight;
+            tempCanvas.getContext('2d').drawImage(video, 0, 0);
+            lastCapture = tempCanvas.toDataURL('image/jpeg', 0.5);
+        }
+
+        const showEmergencyUI = () => {
+            if (document.getElementById('emergency-overlay')) return;
+            captureEvidence();
+            const siren = playSiren();
+
+            const overlay = document.createElement('div');
+            overlay.id = 'emergency-overlay';
+            overlay.style.cssText = `
+                position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                background: rgba(150, 0, 0, 0.9); display: flex; flex-direction: column;
+                align-items: center; justify-content: center; z-index: 9999; text-align: center;
+            `;
+            overlay.innerHTML = `
+                <h1 style="font-size: 2rem; color: white;">⚠️ COLISIÓN DETECTADA</h1>
+                <div id="countdown" style="font-size: 8rem; font-weight: bold; color: white;">10</div>
+                <button id="cancel-btn" style="padding: 20px 40px; font-size: 1.2rem; border-radius: 50px; cursor: pointer; border: none; font-weight: bold; background: white; color: red;">CANCELAR</button>
+            `;
+            document.body.appendChild(overlay);
+
+            const voz = new SpeechSynthesisUtterance("Alerta. Peligro detectado.");
+            voz.lang = 'es-ES'; window.speechSynthesis.speak(voz);
+
+            let timeLeft = 10;
+            const timer = setInterval(async () => {
+                timeLeft--;
+                document.getElementById('countdown').innerText = timeLeft;
+                if (timeLeft <= 0) {
+                    clearInterval(timer);
+                    if(siren.osc) siren.osc.stop();
+                    await getInfoAndSend();
+                    overlay.remove();
+                }
+            }, 1000);
+
+            document.getElementById('cancel-btn').onclick = () => {
+                clearInterval(timer); if(siren.osc) siren.osc.stop(); window.speechSynthesis.cancel();
+                overlay.remove(); lastCapture = null;
+            };
+        };
+
+        async function getInfoAndSend() {
+            await sendToSupabase(currentLat, currentLon, currentSpeed);
+        }
+
+        async function sendToSupabase(lat, lon, speed) {
+            try {
+                // MODIFICADO: Ahora toma el ID del input
+                const idUnidad = document.getElementById('nombre-unidad').value;
+                const { error } = await supabaseClient.from('road_alerts').insert([{ 
+                    alert_type: 'Colisión Inminente (IA-Night)', 
+                    status: 'active',
+                    dispositivo: idUnidad,
+                    latitude: lat,
+                    longitude: lon,
+                    speed_kmh: speed,
+                    video_url: lastCapture,
+                    metadata: { source: 'Smart Tech Night Vision' }
+                }]);
+                if (error) throw error;
+                alert("🚨 EMERGENCIA REPORTADA AL CENTRO DE CONTROL");
+            } catch (err) { console.error("Error Supabase:", err.message); }
+        }
+
+        document.getElementById('btn-panic').onclick = showEmergencyUI;
+        startSystem();
+    </script>
+</body>
+</html>
