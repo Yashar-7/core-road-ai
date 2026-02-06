@@ -53,22 +53,13 @@
         
         #ia-status-text { font-size: 0.7rem; color: #888; margin-top: 10px; text-align: center; }
 
-        /* NUEVO: Estilo para el selector de unidad */
         .unit-selector {
-            margin-bottom: 15px;
-            border: 1px dashed var(--neon-green);
-            padding: 5px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
+            margin-bottom: 15px; border: 1px dashed var(--neon-green);
+            padding: 5px; display: flex; align-items: center; gap: 10px;
         }
         #nombre-unidad {
-            background: black;
-            color: white;
-            border: 1px solid var(--neon-green);
-            font-family: 'Courier New', monospace;
-            padding: 5px;
-            flex-grow: 1;
+            background: black; color: white; border: 1px solid var(--neon-green);
+            font-family: 'Courier New', monospace; padding: 5px; flex-grow: 1;
         }
     </style>
 </head>
@@ -111,7 +102,6 @@
         const canvas = document.getElementById('canvas-ia');
         const ctx = canvas.getContext('2d');
         let model, lastBBoxWidth = 0, lastCapture = null, audioCtx = null;
-        
         let currentLat = null, currentLon = null, currentSpeed = 0;
 
         function playSiren() {
@@ -121,7 +111,6 @@
             osc.type = 'triangle';
             osc.frequency.setValueAtTime(440, audioCtx.currentTime);
             osc.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.5);
-            osc.loop = true;
             gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
             osc.connect(gain); gain.connect(audioCtx.destination);
             osc.start();
@@ -132,28 +121,21 @@
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
                 video.srcObject = stream;
-                
                 document.getElementById('ia-status-text').innerText = "OPTIMIZANDO CEREBRO...";
                 document.getElementById('ia-load-perc').innerText = "50%";
-
                 model = await cocoSsd.load({ base: 'mobilenet_v2' }); 
-                
                 document.getElementById('sys-status').innerText = "VIGILANDO";
                 document.getElementById('ia-load-perc').innerText = "100%";
                 document.getElementById('ia-status-text').innerText = "MODO NOCTURNO ACTIVO";
-                
                 detectFrame();
                 trackGPS();
                 iniciarRastroTrayectoria(); 
-            } catch (err) {
-                console.error("Error inicial:", err);
-            }
+            } catch (err) { console.error("Error inicial:", err); }
         }
 
         function iniciarRastroTrayectoria() {
             setInterval(async () => {
                 if (currentLat && currentLon) {
-                    // MODIFICADO: Ahora toma el ID del input
                     const idUnidad = document.getElementById('nombre-unidad').value;
                     await supabaseClient.from('road_alerts').insert([{ 
                         alert_type: 'RUTA', 
@@ -181,7 +163,6 @@
                     document.getElementById('obj-type').innerText = obj.class.toUpperCase();
                     const currentWidth = obj.bbox[2];
                     const growthRate = currentWidth - lastBBoxWidth;
-                    
                     if (growthRate > 45 || currentWidth > (video.videoWidth * 0.75)) {
                         showEmergencyUI();
                     }
@@ -211,44 +192,33 @@
                 currentLat = pos.coords.latitude;
                 currentLon = pos.coords.longitude;
                 currentSpeed = parseFloat((pos.coords.speed * 3.6 || 0).toFixed(1));
-                
                 document.getElementById('gps-display').innerText = `🛰️ GPS: ${currentLat.toFixed(4)}, ${currentLon.toFixed(4)}`;
                 document.getElementById('car-speed').innerText = currentSpeed + " KM/H";
             }, err => {
-                console.warn("Error GPS:", err);
                 document.getElementById('gps-display').innerText = "🛰️ ERROR GPS";
-            }, { 
-                enableHighAccuracy: true, 
-                timeout: 5000, 
-                maximumAge: 0 
-            });
+            }, { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 });
         }
 
+        // --- FUNCIÓN MEJORADA: CAPTURA ASEGURADA ---
         function captureEvidence() {
+            if (video.readyState < 2) return; // Esperar a que el video tenga datos
             const tempCanvas = document.createElement('canvas');
             tempCanvas.width = video.videoWidth;
             tempCanvas.height = video.videoHeight;
-            tempCanvas.getContext('2d').drawImage(video, 0, 0);
-            lastCapture = tempCanvas.toDataURL('image/jpeg', 0.5);
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+            // Calidad subida al 80% para el zoom
+            lastCapture = tempCanvas.toDataURL('image/jpeg', 0.8);
         }
 
         const showEmergencyUI = () => {
             if (document.getElementById('emergency-overlay')) return;
             captureEvidence();
             const siren = playSiren();
-
             const overlay = document.createElement('div');
             overlay.id = 'emergency-overlay';
-            overlay.style.cssText = `
-                position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-                background: rgba(150, 0, 0, 0.9); display: flex; flex-direction: column;
-                align-items: center; justify-content: center; z-index: 9999; text-align: center;
-            `;
-            overlay.innerHTML = `
-                <h1 style="font-size: 2rem; color: white;">⚠️ COLISIÓN DETECTADA</h1>
-                <div id="countdown" style="font-size: 8rem; font-weight: bold; color: white;">10</div>
-                <button id="cancel-btn" style="padding: 20px 40px; font-size: 1.2rem; border-radius: 50px; cursor: pointer; border: none; font-weight: bold; background: white; color: red;">CANCELAR</button>
-            `;
+            overlay.style.cssText = `position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(150, 0, 0, 0.9); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 9999; text-align: center;`;
+            overlay.innerHTML = `<h1 style="font-size: 2rem; color: white;">⚠️ COLISIÓN DETECTADA</h1><div id="countdown" style="font-size: 8rem; font-weight: bold; color: white;">10</div><button id="cancel-btn" style="padding: 20px 40px; font-size: 1.2rem; border-radius: 50px; cursor: pointer; border: none; font-weight: bold; background: white; color: red;">CANCELAR</button>`;
             document.body.appendChild(overlay);
 
             const voz = new SpeechSynthesisUtterance("Alerta. Peligro detectado.");
@@ -273,20 +243,15 @@
         };
 
         async function getInfoAndSend() {
-            await sendToSupabase(currentLat, currentLon, currentSpeed);
-        }
-
-        async function sendToSupabase(lat, lon, speed) {
+            const idUnidad = document.getElementById('nombre-unidad').value;
             try {
-                // MODIFICADO: Ahora toma el ID del input
-                const idUnidad = document.getElementById('nombre-unidad').value;
                 const { error } = await supabaseClient.from('road_alerts').insert([{ 
                     alert_type: 'Colisión Inminente (IA-Night)', 
                     status: 'active',
                     dispositivo: idUnidad,
-                    latitude: lat,
-                    longitude: lon,
-                    speed_kmh: speed,
+                    latitude: currentLat,
+                    longitude: currentLon,
+                    speed_kmh: currentSpeed,
                     video_url: lastCapture,
                     metadata: { source: 'Smart Tech Night Vision' }
                 }]);
