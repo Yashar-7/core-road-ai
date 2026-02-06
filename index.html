@@ -9,7 +9,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     
     <style>
-        :root { --neon-green: #00ff41; --danger-red: #ff0000; }
+        :root { --neon-green: #00ff41; --danger-red: #ff4444; }
         body {
             margin: 0; background-color: #050505; color: var(--neon-green); 
             font-family: 'Courier New', monospace; display: flex;
@@ -51,7 +51,13 @@
         }
         .emergency-btn:hover { background: var(--neon-green); color: black; }
         
-        #ia-status-text { font-size: 0.7rem; color: #888; margin-top: 10px; text-align: center; }
+        /* Estilo para el botón de apagado */
+        .off-btn {
+            background: transparent; color: var(--danger-red); border: 1px solid var(--danger-red);
+            padding: 8px; width: 100%; margin-top: 10px; cursor: pointer; font-size: 0.7rem;
+            text-transform: uppercase; border-radius: 8px; opacity: 0.7;
+        }
+        .off-btn:hover { background: var(--danger-red); color: white; opacity: 1; }
 
         .unit-selector {
             margin-bottom: 15px; border: 1px dashed var(--neon-green);
@@ -90,6 +96,7 @@
         </div>
 
         <button id="btn-panic" class="emergency-btn">SIMULAR PELIGRO MANUAL</button>
+        <button id="btn-off" class="off-btn">FINALIZAR TURNO / APAGAR SISTEMA</button>
         <div id="ia-status-text">ESPERANDO INICIO...</div>
     </div>
 
@@ -103,6 +110,7 @@
         const ctx = canvas.getContext('2d');
         let model, lastBBoxWidth = 0, lastCapture = null, audioCtx = null;
         let currentLat = null, currentLon = null, currentSpeed = 0;
+        let rastroInterval = null; // Para poder detenerlo
 
         function playSiren() {
             if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -134,7 +142,7 @@
         }
 
         function iniciarRastroTrayectoria() {
-            setInterval(async () => {
+            rastroInterval = setInterval(async () => {
                 if (currentLat && currentLon) {
                     const idUnidad = document.getElementById('nombre-unidad').value;
                     await supabaseClient.from('road_alerts').insert([{ 
@@ -151,6 +159,7 @@
         }
 
         async function detectFrame() {
+            if (video.paused) return; // Detener si el video se para
             const predictions = await model.detect(video);
             renderRadar(predictions);
             analyzeMovement(predictions);
@@ -199,15 +208,13 @@
             }, { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 });
         }
 
-        // --- FUNCIÓN MEJORADA: CAPTURA ASEGURADA ---
         function captureEvidence() {
-            if (video.readyState < 2) return; // Esperar a que el video tenga datos
+            if (video.readyState < 2) return;
             const tempCanvas = document.createElement('canvas');
             tempCanvas.width = video.videoWidth;
             tempCanvas.height = video.videoHeight;
             const tempCtx = tempCanvas.getContext('2d');
             tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
-            // Calidad subida al 80% para el zoom
             lastCapture = tempCanvas.toDataURL('image/jpeg', 0.8);
         }
 
@@ -256,9 +263,29 @@
                     metadata: { source: 'Smart Tech Night Vision' }
                 }]);
                 if (error) throw error;
-                alert("🚨 EMERGENCIA REPORTADA AL CENTRO DE CONTROL");
+                alert("🚨 EMERGENCIA REPORTADA");
             } catch (err) { console.error("Error Supabase:", err.message); }
         }
+
+        // --- FUNCIÓN DE APAGADO ---
+        document.getElementById('btn-off').onclick = async () => {
+            if(confirm("¿Desea finalizar el turno? Se dejará de transmitir su ubicación.")) {
+                const idUnidad = document.getElementById('nombre-unidad').value;
+                clearInterval(rastroInterval); // Detener GPS en el servidor
+                
+                await supabaseClient.from('road_alerts').insert([{ 
+                    alert_type: 'SISTEMA OFF', 
+                    status: 'inactive',
+                    dispositivo: idUnidad,
+                    latitude: currentLat,
+                    longitude: currentLon,
+                    metadata: { info: 'Cierre de sesión manual' }
+                }]);
+
+                alert("Turno Finalizado. Sistema desconectado.");
+                location.reload(); // Reinicia la app
+            }
+        };
 
         document.getElementById('btn-panic').onclick = showEmergencyUI;
         startSystem();
